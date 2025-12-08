@@ -27,6 +27,7 @@ def get_args():
     parser.add_argument("--max_seq_len", default=32, type=int)
     parser.add_argument("--lr", default=0.001, type=float)
     parser.add_argument("--no_cuda", action='store_true')
+    parser.add_argument("--device", default="cuda:4", type=str)
     parser.add_argument("-m", "--model", default='transformer', type=str)
     parser.add_argument("--fp16", action='store_true')
     parser.add_argument("--fp16_opt_level", default='O1', type=str)
@@ -98,7 +99,10 @@ def run():
     args = get_args()
     fdir = Path(args.dir)
     tb = SummaryWriter(args.logdir)
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+    if args.device:
+        device = torch.device(args.device)
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
     output_dir = Path(args.output)
     output_dir.mkdir(exist_ok=True, parents=True)
     logger.info(args)
@@ -121,8 +125,10 @@ def run():
             model, optimizer = amp.initialize(model, optimizer, opt_level=args.fp16_opt_level)
         except ImportError:
             raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use fp16 training.")
-    if torch.cuda.device_count() > 1:
+    use_dataparallel = False
+    if torch.cuda.device_count() > 1 and device.type != 'cpu' and (not args.device or ':' not in args.device):
         model = torch.nn.DataParallel(model)
+        use_dataparallel = True
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min')
     logger.info(f"num gpu: {torch.cuda.device_count()}")
     global_step = 0
@@ -137,7 +143,7 @@ def run():
             input_ids, masks, lens, target_ids = batch
             logits = model(input_ids, masks)
             loss = loss_function(logits.view(-1, tokenizer.vocab_size), target_ids.view(-1))
-            if torch.cuda.device_count() > 1:
+            if use_dataparallel:
                 loss = loss.mean()
             accu_loss += loss.item()
             if args.fp16:

@@ -6,11 +6,16 @@ import argparse
 from main import init_model_by_key
 from module import Tokenizer, init_model_by_key
 
-MODEL_PATH = sys.argv[1]
+parser = argparse.ArgumentParser()
+parser.add_argument("--model_path", type=str)
+parser.add_argument("--device", default="cuda:4", type=str)
+args = parser.parse_args()
+
+MODEL_PATH = args.model_path
 class Context(object):
-    def __init__(self, path):
+    def __init__(self, path, device_name):
         print(f"loading pretrained model from {path}")
-        self.device = torch.device('cpu')
+        self.device = torch.device(device_name)
         model_info = torch.load(path)
         self.tokenizer = model_info['tokenzier']
         self.model = init_model_by_key(model_info['args'], self.tokenizer)
@@ -27,7 +32,7 @@ class Context(object):
         return pred
         
 app = Flask(__name__)
-ctx = Context(MODEL_PATH)
+ctx = Context(MODEL_PATH, args.device)
 
 @app.route('/<coupletup>')
 def api(coupletup):
