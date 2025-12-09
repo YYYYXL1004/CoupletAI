@@ -85,3 +85,12 @@ class Tokenizer(object):
             if ignore_pad and t != self.pad_id:
                 tokens.append(self.ix_to_token[t])
         return tokens
+    
+    def get_punctuation_ids(self):
+        """获取标点符号的token id列表，用于生成时过滤"""
+        punctuations = '，。！？、；：""''（）《》【】—…·,.'
+        punct_ids = []
+        for p in punctuations:
+            if p in self.token_to_ix:
+                punct_ids.append(self.token_to_ix[p])
+        return punct_ids

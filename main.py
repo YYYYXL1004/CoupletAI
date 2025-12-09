@@ -82,8 +82,8 @@ def auto_evaluate(model, testloader, tokenizer, use_seq2seq=False):
         input_ids, masks, lens, target_ids = tuple(t.to(device) for t in batch)
         with torch.no_grad():
             if use_seq2seq:
-                # Seq2Seq模型：输入src，输出logits
-                logits = model(input_ids, trg=None, teacher_forcing_ratio=0)
+                # Seq2Seq模型：使用带重复惩罚的generate方法（评估时不做标点对齐，保持原始输出）
+                logits = model.generate(input_ids, repetition_penalty=1.2, punctuation_ids=None)
             else:
                 # 原始模型：序列标注
                 logits = model(input_ids, masks)
@@ -136,7 +136,9 @@ def predict_demos(model, tokenizer: Tokenizer, use_seq2seq=False, logger=None):
         sent = sent.to(device)
         with torch.no_grad():
             if use_seq2seq:
-                logits = model(sent, trg=None, teacher_forcing_ratio=0).squeeze(0)
+                # Seq2Seq模型：使用带标点对齐的generate方法
+                punct_ids = tokenizer.get_punctuation_ids()
+                logits = model.generate(sent, repetition_penalty=1.5, punctuation_ids=punct_ids).squeeze(0)
             else:
                 logits = model(sent).squeeze(0)
         pred = logits.argmax(dim=-1).tolist()

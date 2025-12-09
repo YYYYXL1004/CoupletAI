@@ -246,13 +246,84 @@ class Seq2SeqModel(nn.Module):
         
         return outputs
     
-    def generate(self, src, max_len=None):
+    def generate(self, src, max_len=None, repetition_penalty=1.2, 
+                 punctuation_ids=None, force_same_length=True):
         """
-        推理时的生成方法（贪婪解码）
+        推理时的生成方法（带重复惩罚的贪婪解码）
+        Args:
+            src: (batch_size, src_len)
+            max_len: 最大生成长度，默认等于src长度
+            repetition_penalty: 重复惩罚系数，>1会抑制重复
+            punctuation_ids: 标点符号token id列表，用于位置对齐
+            force_same_length: 强制生成与输入等长的序列
         """
         self.eval()
+        batch_size = src.shape[0]
+        
+        # 计算每个样本的实际长度（非PAD部分）
+        if force_same_length:
+            src_lens = (src != self.pad_id).sum(dim=1)  # (batch_size,)
+            trg_len = src.shape[1]
+        else:
+            trg_len = max_len if max_len else src.shape[1]
+            src_lens = torch.full((batch_size,), trg_len, device=src.device)
+        
+        device = src.device
+        punct_set = set(punctuation_ids) if punctuation_ids else set()
+        
         with torch.no_grad():
-            return self.forward(src, trg=None, teacher_forcing_ratio=0)
+            # 编码
+            encoder_outputs, hidden = self.encoder(src)
+            
+            if self.hidden_proj is not None:
+                hidden = torch.tanh(self.hidden_proj(hidden))
+            
+            mask = (src == self.pad_id)
+            
+            outputs = torch.zeros(batch_size, trg_len, self.decoder.vocab_size).to(device)
+            input_token = torch.full((batch_size,), self.sos_id, dtype=torch.long, device=device)
+            
+            # 记录已生成的token用于重复惩罚
+            generated = [[] for _ in range(batch_size)]
+            
+            for t in range(trg_len):
+                output, hidden, _ = self.decoder(input_token, hidden, encoder_outputs, mask)
+                
+                # 应用重复惩罚
+                if repetition_penalty != 1.0:
+                    for i in range(batch_size):
+                        for token_id in generated[i]:
+                            output[i, token_id] /= repetition_penalty
+                
+                # 标点符号位置对齐：上联是标点则下联也必须是标点，反之禁止标点
+                if punct_set:
+                    for i in range(batch_size):
+                        if t < src_lens[i]:
+                            src_token = src[i, t].item()
+                            if src_token in punct_set:
+                                # 上联此位置是标点，强制输出相同标点
+                                output[i, :] = float('-inf')
+                                output[i, src_token] = 0
+                            else:
+                                # 上联此位置不是标点，禁止输出标点
+                                for punct_id in punct_set:
+                                    output[i, punct_id] = float('-inf')
+                
+                # 对于已经达到目标长度的样本，强制输出PAD
+                if force_same_length:
+                    for i in range(batch_size):
+                        if t >= src_lens[i]:
+                            output[i, :] = float('-inf')
+                            output[i, self.pad_id] = 0
+                
+                outputs[:, t, :] = output
+                input_token = output.argmax(dim=-1)
+                
+                # 记录生成的token
+                for i in range(batch_size):
+                    generated[i].append(input_token[i].item())
+            
+            return outputs
 
 
 def build_seq2seq_model(vocab_size: int, embed_dim: int, hidden_dim: int,

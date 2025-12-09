@@ -20,7 +20,12 @@ def run():
     model_info = torch.load(args.path, map_location=device)
     tokenizer = model_info['tokenzier']
     model = init_model_by_key(model_info['args'], tokenizer)
-    model.load_state_dict(model_info['model'])
+    
+    # 处理多卡训练保存的模型（去掉module.前缀）
+    state_dict = model_info['model']
+    if any(k.startswith('module.') for k in state_dict.keys()):
+        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+    model.load_state_dict(state_dict)
     model.to(device)
     model.eval()
     
@@ -28,6 +33,9 @@ def run():
     use_seq2seq = is_seq2seq_model(model)
     print(f"Model: {model.__class__.__name__}, Seq2Seq: {use_seq2seq}")
     print(f"输入 '{args.stop_flag}' 退出\n")
+    
+    # 获取标点符号id用于过滤
+    punct_ids = tokenizer.get_punctuation_ids() if use_seq2seq else None
     
     while True:
         question = input("上联：")
@@ -38,8 +46,13 @@ def run():
         input_ids = torch.tensor(tokenizer.encode(question)).unsqueeze(0).to(device)
         with torch.no_grad():
             if use_seq2seq:
-                # Seq2Seq模型：推理模式
-                logits = model(input_ids, trg=None, teacher_forcing_ratio=0).squeeze(0)
+                # Seq2Seq模型：带重复惩罚 + 标点对齐 + 强制等长
+                logits = model.generate(
+                    input_ids, 
+                    repetition_penalty=1.5,
+                    punctuation_ids=punct_ids,
+                    force_same_length=True
+                ).squeeze(0)
             else:
                 # 原始模型：序列标注
                 logits = model(input_ids).squeeze(0)
