@@ -60,7 +60,6 @@ def get_args():
     parser.add_argument("--n_head", default=8, type=int)
 
     parser.add_argument("--test_epoch", default=1, type=int)
-    parser.add_argument("--save_epoch", default=10, type=int)
 
     parser.add_argument("--embed_drop", default=0.2, type=float)
     parser.add_argument("--hidden_drop", default=0.1, type=float)
@@ -70,6 +69,7 @@ def get_args():
     
     # 实验管理
     parser.add_argument("--exp_name", default=None, type=str, help="实验名称，用于区分不同实验")
+    parser.add_argument("--patience", default=5, type=int, help="早停耐心值，连续多少个epoch没有提升就停止")
     return parser.parse_args()
 
 def auto_evaluate(model, testloader, tokenizer, use_seq2seq=False):
@@ -240,6 +240,7 @@ def run():
     
     global_step = 0
     best_val_loss = float('inf')
+    no_improve_count = 0  # 早停计数器
     
     # 训练循环
     for epoch in range(args.epochs):
@@ -328,16 +329,22 @@ def run():
             # 记录预测样例
             demos = predict_demos(model, tokenizer, use_seq2seq, logger)
         
-        # 保存最佳模型
+        # 保存最佳模型 + 早停检查
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            no_improve_count = 0
             save_model(output_dir / "best_model.bin", model, args, tokenizer)
             logger.info(f"Saved best model with val_loss={val_loss:.6f}")
+            print(f"  ✓ Best model saved!")
+        else:
+            no_improve_count += 1
+            print(f"  No improvement ({no_improve_count}/{args.patience})")
         
-        # 定期保存
-        if (epoch + 1) % args.save_epoch == 0:
-            filename = f"checkpoint_epoch{epoch + 1}.bin"
-            save_model(output_dir / filename, model, args, tokenizer)
+        # 早停检查
+        if no_improve_count >= args.patience:
+            print(f"\n⚠ Early stopping triggered! No improvement for {args.patience} epochs.")
+            logger.info(f"Early stopping at epoch {epoch+1}")
+            break
     
     # 保存训练历史
     with open(output_dir / "history.json", 'w') as f:
