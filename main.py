@@ -70,6 +70,11 @@ def get_args():
     # 实验管理
     parser.add_argument("--exp_name", default=None, type=str, help="实验名称，用于区分不同实验")
     parser.add_argument("--patience", default=5, type=int, help="早停耐心值，连续多少个epoch没有提升就停止")
+    parser.add_argument("--early_stop_metric", default="bleu", type=str, 
+                        choices=["val_loss", "bleu", "combined"],
+                        help="早停判断指标: val_loss, bleu, combined(加权)")
+    parser.add_argument("--bleu_weight", default=0.7, type=float, 
+                        help="combined模式下BLEU权重(Rouge-L权重=1-bleu_weight)")
     return parser.parse_args()
 
 def auto_evaluate(model, testloader, tokenizer, use_seq2seq=False):
@@ -242,6 +247,7 @@ def run():
     
     global_step = 0
     best_val_loss = float('inf')
+    best_score = -float('inf')  # 用于 BLEU/combined 早停
     no_improve_count = 0  # 早停计数器
     
     # 训练循环
@@ -315,8 +321,9 @@ def run():
         # 终端显示
         print(f"  Train Loss: {avg_train_loss:.6f} | Val Loss: {val_loss:.6f} | Time: {epoch_time:.2f}s")
         
-        # 测试评估
-        if (epoch + 1) % args.test_epoch == 0:
+        # 测试评估 (如果用 bleu/combined 早停，必须每个 epoch 都评估)
+        need_eval = (epoch + 1) % args.test_epoch == 0 or args.early_stop_metric != "val_loss"
+        if need_eval:
             bleu, rl = auto_evaluate(model, test_loader, tokenizer, use_seq2seq)
             history['bleu'].append(bleu)
             history['rouge_l'].append(rl)
@@ -332,11 +339,26 @@ def run():
             demos = predict_demos(model, tokenizer, use_seq2seq, logger)
         
         # 保存最佳模型 + 早停检查
-        if val_loss < best_val_loss:
+        # 根据 early_stop_metric 判断是否改善
+        if args.early_stop_metric == "val_loss":
+            current_score = -val_loss  # 转为越大越好
+            is_improved = val_loss < best_val_loss
+        elif args.early_stop_metric == "bleu":
+            current_score = bleu
+            is_improved = current_score > best_score
+        else:  # combined
+            current_score = args.bleu_weight * bleu + (1 - args.bleu_weight) * rl
+            is_improved = current_score > best_score
+        
+        if is_improved:
             best_val_loss = val_loss
+            best_score = current_score
             no_improve_count = 0
             save_model(output_dir / "best_model.bin", model, args, tokenizer)
-            logger.info(f"Saved best model with val_loss={val_loss:.6f}")
+            if args.early_stop_metric == "val_loss":
+                logger.info(f"Saved best model with val_loss={val_loss:.6f}")
+            else:
+                logger.info(f"Saved best model with {args.early_stop_metric}={current_score:.6f}")
             print(f"  ✓ Best model saved!")
         else:
             no_improve_count += 1
